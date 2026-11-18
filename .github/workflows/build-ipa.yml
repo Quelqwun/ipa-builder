@@ -1,108 +1,54 @@
-name: Build unsigned iOS IPA
+name: Build Shop2Speed iOS (Xcode 27)
 
 on:
   workflow_dispatch:
-    inputs:
-      repo:
-        description: "Repo a compilar (owner/nombre), ej: adro0303/mcqueens-web"
-        required: true
-      ref:
-        description: "Rama, tag o commit"
-        required: false
-        default: "main"
-      app_dir:
-        description: "Carpeta dentro del repo donde esta el proyecto Expo (usa . si esta en la raiz)"
-        required: false
-        default: "."
-      ipa_name:
-        description: "Nombre del artefacto .ipa resultante"
-        required: false
-        default: "app-unsigned"
+  push:
+    branches:
+      - main
 
 jobs:
-  build:
-    runs-on: macos-latest
-    timeout-minutes: 45
+  build-ios:
+    name: Compiler Shop2Speed iOS
+    runs-on: xcode-27 # Cible l'environnement macOS ARM64 avec Xcode 27
+
     steps:
-      - name: Checkout target project
+      - name: 1. Cloner le dépôt
         uses: actions/checkout@v4
+
+      - name: 2. Configurer Node.js
+        uses: actions/setup-node@v4
         with:
-          repository: ${{ inputs.repo }}
-          ref: ${{ inputs.ref }}
-          token: ${{ secrets.CROSS_REPO_TOKEN }}
-          path: target
+          node-version: 22.x
+          cache: 'npm' # Remplacez par 'yarn' ou 'pnpm' si vous utilisez un autre gestionnaire
 
-      - uses: actions/setup-node@v4
+      - name: 3. Installer les dépendances du projet
+        run: npm ci
+        # *Vérification :* Le dossier node_modules est présent et les dépendances sont installées sans erreur critique.
+
+      - name: 4. Générer les dossiers natifs (Expo Prebuild)
+        run: npx expo prebuild --platform ios --clean
+        # *Vérification :* Le dossier "ios/" est créé à la racine du projet et contient le fichier Shop2Speed.xcworkspace.
+
+      - name: 5. Installer les pods CocoaPods
+        run: |
+          cd ios
+          pod install
+        # *Vérification :* La commande s'achève avec le message "Pod installation complete!" sans erreurs de dépendances CocoaPods.
+
+      - name: 6. Compiler l'application en mode Release (xcodebuild)
+        run: |
+          cd ios
+          xcodebuild -workspace Shop2Speed.xcworkspace \
+                     -scheme Shop2Speed \
+                     -configuration Release \
+                     -sdk iphoneos \
+                     -derivedDataPath build \
+                     CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+        # *Vérification :* La compilation se termine par la mention "** BUILD SUCCEEDED **".
+
+      - name: 7. Sauvegarder l'artefact compilé (.app)
+        uses: actions/upload-artifact@v4
         with:
-          node-version: 20
-
-      - name: Select latest available Xcode
-        run: |
-          ls /Applications | grep -i Xcode
-          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)
-          sudo xcode-select -s "$LATEST"
-          xcodebuild -version
-
-      - name: Install JS dependencies
-        working-directory: target/${{ inputs.app_dir }}
-        run: npm install
-
-      - name: Prebuild native iOS project
-        working-directory: target/${{ inputs.app_dir }}
-        run: npx expo prebuild --platform ios --non-interactive
-
-      - name: Install CocoaPods dependencies
-        working-directory: target/${{ inputs.app_dir }}/ios
-        run: pod install
-
-      - name: Find workspace and scheme
-        id: target_scheme
-        working-directory: target/${{ inputs.app_dir }}
-        run: |
-          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n1)
-          PROJECT=$(ls -d ios/*.xcodeproj | head -n1)
-          SCHEME=$(basename "$PROJECT" .xcodeproj)
-          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
-          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
-          echo "Workspace: $WORKSPACE / Scheme: $SCHEME"
-          echo "All schemes in workspace (for reference):"
-          xcodebuild -list -workspace "$WORKSPACE"
-
-      - name: Build (unsigned)
-        working-directory: target/${{ inputs.app_dir }}
-        run: |
-          xcodebuild \
-            -workspace "${{ steps.target_scheme.outputs.workspace }}" \
-            -scheme "${{ steps.target_scheme.outputs.scheme }}" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            build
-
-      - name: Package unsigned IPA
-        working-directory: target/${{ inputs.app_dir }}
-        run: |
-          echo "Build products:"
-          find build/DerivedData/Build/Products -maxdepth 2
-          APP_PATH=$(find build/DerivedData/Build/Products -maxdepth 2 -name "*.app" -type d | head -n1)
-          if [ -z "$APP_PATH" ]; then
-            echo "No .app bundle found in build products"
-            exit 1
-          fi
-          echo "Found app: $APP_PATH"
-          mkdir -p build/Payload
-          cp -r "$APP_PATH" build/Payload/
-          cd build
-          zip -r "${{ inputs.ipa_name }}.ipa" Payload
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.ipa_name }}
-          path: target/${{ inputs.app_dir }}/build/${{ inputs.ipa_name }}.ipa
-          retention-days: 14
+          name: Shop2Speed-iOS-App
+          path: ios/build/Build/Products/Release-iphoneos/Shop2Speed.app
+        # *Vérification :* L'artefact est bien téléchargeable depuis l'onglet "Actions" de votre dépôt GitHub après la fin du workflow.
